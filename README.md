@@ -1,22 +1,22 @@
-# ConChat Backend
+# CronChat Backend
 
-🚀 **ConChat Backend** is a backend service that provides realtime chat functionality within a larger, service-oriented system.
+🚀 **CronChat Backend** is a backend service that provides realtime chat functionality within a service-oriented system.
 
-The project focuses on building a maintainable and extensible backend, applying common backend patterns such as authentication, realtime communication, data modeling, and service isolation. The chat service is designed as an independent component and can be extended or integrated with other services in the future.
+The service is designed as an independent component, focusing on clear boundaries, maintainable structure, and the ability to evolve alongside other services in the system.
 
 ---
 
 ## Overview
 
-This service handles core chat-related responsibilities, including:
+CronChat Backend is responsible for core chat-related capabilities, including:
 
-- User authentication and authorization
+- Authentication and authorization
 - Room and membership management
 - Realtime message delivery
 - Message state handling (reactions, replies, read status)
 - Media handling at service level
 
-The implementation emphasizes clear structure, incremental development, and practical backend considerations.
+The implementation prioritizes clarity, incremental improvement, and practical backend design.
 
 ---
 
