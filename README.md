@@ -2,21 +2,21 @@
 
 🚀 **CronChat Backend** is a backend service that provides realtime chat functionality within a service-oriented system.
 
-The service is designed as an independent component, focusing on clear boundaries, maintainable structure, and the ability to evolve alongside other services in the system.
+The service is designed as an independent component, with clear responsibilities around authentication, realtime communication, and chat-related data management. It is built with maintainability and extensibility in mind, allowing future integration with other services.
 
 ---
 
 ## Overview
 
-CronChat Backend is responsible for core chat-related capabilities, including:
+CronChat Backend is responsible for:
 
 - Authentication and authorization
 - Room and membership management
 - Realtime message delivery
 - Message state handling (reactions, replies, read status)
-- Media handling at service level
+- Media handling at the service level
 
-The implementation prioritizes clarity, incremental improvement, and practical backend design.
+The implementation focuses on clear structure, predictable behavior, and incremental improvement.
 
 ---
 
@@ -53,7 +53,7 @@ The implementation prioritizes clarity, incremental improvement, and practical b
 ### User
 - User profile management
 - Avatar upload and retrieval
-
+...
 ---
 
 ## Project Structure
@@ -69,5 +69,8 @@ api-service/
 │   ├── auth/          # authentication and middleware
 │   └── httpserver/    # routing and HTTP handlers
 ├── data/              # local image storage (placeholder before introducing a dedicated media/storage service)
+├── migrations/        # database schema and migrations
 ├── docker-compose.yml
+├── .sql               # database
 └── Dockerfile
+
