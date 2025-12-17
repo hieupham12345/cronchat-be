@@ -224,6 +224,7 @@ func (r *Repository) EnsureReplyTargetValid(ctx context.Context, roomID int64, r
 
 // CreateMessage: insert 1 message (supports reply_to_message_id)
 // ctx để mày dễ cancel/timeout + đồng bộ style các repo khác
+
 func (r *Repository) CreateMessage(ctx context.Context, msg *Message, validateReply bool) (int64, error) {
 	if msg == nil {
 		return 0, errors.New("msg is nil")
@@ -242,34 +243,42 @@ func (r *Repository) CreateMessage(ctx context.Context, msg *Message, validateRe
 		}
 	}
 
-	res, err := r.DB.ExecContext(ctx, `
-		INSERT INTO messages (
-			room_id, sender_id,
-			reply_to_message_id, reply_preview, reply_sender_name, reply_message_type,
-			content, message_type, is_temp
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	// ✅ Use TX so CALL + LAST_INSERT_ID() is consistent
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// ✅ CALL proc instead of direct INSERT
+	// p_created_at: pass NULL to let proc fallback (or pass time.Now().UTC() if you want)
+	_, err = tx.ExecContext(ctx, `
+		CALL sp_send_message_with_day_sep(?, ?, ?, ?, ?, ?)
 	`,
 		msg.RoomID,
 		msg.SenderID,
 
-		msg.ReplyToMessageID, // nil => NULL
-		nullIfEmpty(msg.ReplyPreview),
-		nullIfEmpty(msg.ReplySenderName),
-		nullIfEmpty(msg.ReplyMessageType),
-
 		msg.Content,
-		msg.MessageType,
+		msg.MessageType, // 'text'|'image'|'file'|'system'
 		msg.IsTemp,
+
+		nil, // created_at -> NULL => proc uses NOW()/UTC_TIMESTAMP() depending on your proc
 	)
 	if err != nil {
 		return 0, err
 	}
 
-	id, err := res.LastInsertId()
-	if err != nil {
+	// ✅ The last INSERT inside the proc is the "real message"
+	var id int64
+	if err := tx.QueryRowContext(ctx, `SELECT LAST_INSERT_ID()`).Scan(&id); err != nil {
 		return 0, err
 	}
+
+	// ✅ commit
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
 	msg.ID = id
 	return id, nil
 }

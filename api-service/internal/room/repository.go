@@ -270,43 +270,55 @@ func (r *Repository) IsUserInRoom(roomID, userID int64) (bool, error) {
 	return count > 0, nil
 }
 
-func (r *Repository) GetRoomMessages(roomID int64, beforeID int64, limit int, viewerUserID int64) ([]*Message, error) {
-	query := `
-		SELECT * FROM (
-			SELECT 
-				m.id,
-				m.room_id,
-				m.sender_id,
+func (r *Repository) GetMessageCreatedAt(
+	ctx context.Context,
+	roomID int64,
+	messageID int64,
+) (time.Time, error) {
 
-				m.reply_to_message_id,
-				m.reply_preview,
-				m.reply_sender_name,
-				m.reply_message_type,
+	var t time.Time
+	err := r.DB.QueryRowContext(ctx, `
+		SELECT created_at
+		FROM messages
+		WHERE room_id = ? AND id = ?
+		LIMIT 1
+	`, roomID, messageID).Scan(&t)
 
-				m.content,
-				m.message_type,
-				m.is_temp,
+	return t, err
+}
 
-				m.media_url,
-				m.media_mime,
-				m.media_size,
+func (r *Repository) GetRoomMessages(roomID int64, beforeID int64, beforeAt time.Time, limit int, userID int64) ([]*Message, error) {
+	cursorEnabled := 0
+	var beforeAtVal any = nil
 
-				m.created_at,
+	if beforeID > 0 && !beforeAt.IsZero() {
+		cursorEnabled = 1
+		beforeAtVal = beforeAt
+	}
 
-				u.full_name,
-				u.username,
-				u.avatar_url
-			FROM messages m
-			LEFT JOIN users u ON m.sender_id = u.id
-			WHERE m.room_id = ?
-			  AND (? = 0 OR m.id < ?)
-			ORDER BY m.created_at DESC
-			LIMIT ?
-		) AS t
-		ORDER BY t.created_at ASC;
-	`
-
-	rows, err := r.DB.Query(query, roomID, beforeID, beforeID, limit)
+	rows, err := r.DB.Query(`
+		SELECT *
+		FROM (
+		  SELECT
+		    m.id, m.room_id, m.sender_id,
+		    m.reply_to_message_id, m.reply_preview, m.reply_sender_name, m.reply_message_type,
+		    m.content, m.message_type, m.is_temp,
+		    m.media_url, m.media_mime, m.media_size,
+		    m.created_at,
+		    u.full_name, u.username, u.avatar_url
+		  FROM messages m
+		  LEFT JOIN users u ON m.sender_id = u.id
+		  WHERE m.room_id = ?
+		    AND (
+		      ? = 0
+		      OR m.created_at < ?
+		      OR (m.created_at = ? AND m.id < ?)
+		    )
+		  ORDER BY m.created_at DESC, m.id DESC
+		  LIMIT ?
+		) t
+		ORDER BY t.created_at ASC, t.id ASC
+	`, roomID, cursorEnabled, beforeAtVal, beforeAtVal, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +419,7 @@ func (r *Repository) GetRoomMessages(roomID int64, beforeID int64, limit int, vi
 
 	// ✅ Attach reactions batch (không có message => skip)
 	if len(msgs) > 0 {
-		reactionMap, err := r.chatRepo.GetReactionSummaryBatch(context.Background(), messageIDs, viewerUserID)
+		reactionMap, err := r.chatRepo.GetReactionSummaryBatch(context.Background(), messageIDs, userID)
 		// NOTE: nếu mày đã dùng ctx ở handler thì nên truyền ctx vào hàm này luôn (xịn nhất).
 		// Ở đây tạm để context.Background() nếu signature hiện tại không có ctx.
 		if err != nil {

@@ -229,11 +229,25 @@ func (s *Server) handleGetRoomMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ==========================
+	// ✅ Cursor: before_id + before_at (RFC3339)
+	// ==========================
 	var beforeID int64 = 0
 	if v := r.URL.Query().Get("before_id"); v != "" {
 		beforeID, _ = strconv.ParseInt(v, 10, 64)
 	}
 
+	var beforeAt time.Time
+	if v := r.URL.Query().Get("before_at"); v != "" {
+		// Expect RFC3339 string (e.g. "2025-12-18T02:11:22+07:00")
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			beforeAt = t
+		}
+	}
+
+	// ==========================
+	// ✅ Authz: must be member
+	// ==========================
 	isMember, err := s.roomRepo.IsUserInRoom(roomID, userID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db error"})
@@ -244,7 +258,28 @@ func (s *Server) handleGetRoomMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msgs, err := s.roomRepo.GetRoomMessages(roomID, beforeID, limit, userID)
+	// ==========================
+	// ✅ Backward compatible:
+	// If FE only sends before_id (old client), we lookup created_at for that id.
+	// This avoids skipping day-separators/system messages when sorting by created_at.
+	// ==========================
+	if beforeID > 0 && beforeAt.IsZero() {
+		// optional timeout
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Get created_at of the cursor message (room_id + id)
+		t, e := s.roomRepo.GetMessageCreatedAt(ctx, roomID, beforeID)
+		if e == nil && !t.IsZero() {
+			beforeAt = t
+		}
+		// nếu lookup fail thì vẫn chạy tiếp với beforeAt zero (repo sẽ treat as no cursor)
+	}
+
+	// ==========================
+	// ✅ Get messages (cursor by created_at + id)
+	// ==========================
+	msgs, err := s.roomRepo.GetRoomMessages(roomID, beforeID, beforeAt, limit, userID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db error"})
 		return
@@ -252,6 +287,7 @@ func (s *Server) handleGetRoomMessages(w http.ResponseWriter, r *http.Request) {
 
 	// ==========================
 	// ✅ NEW: auto mark seen tới message mới nhất user vừa load
+	// (giữ logic cũ)
 	// ==========================
 	var newestID int64 = 0
 	if beforeID == 0 {
@@ -304,6 +340,9 @@ func (s *Server) handleGetRoomMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ==========================
+	// ✅ Response mapping
+	// ==========================
 	respMsgs := make([]RoomMessageResponse, 0, len(msgs))
 	for _, m := range msgs {
 		createdAtStr := ""
