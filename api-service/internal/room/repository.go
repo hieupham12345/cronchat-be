@@ -5,6 +5,7 @@ import (
 	"cronhustler/api-service/internal/chat"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -770,4 +771,31 @@ func (r *Repository) GetRoomByIDLite(ctx context.Context, roomID int64) (*RoomLi
 		return nil, err
 	}
 	return &x, nil
+}
+
+type roomLiteResponse struct {
+	ID          int64  `json:"id"`
+	Type        string `json:"type,omitempty"`
+	Name        string `json:"name,omitempty"`        // raw name (group)
+	DisplayName string `json:"displayName,omitempty"` // tên hiển thị FE dùng
+}
+
+func (r *Repository) GetRoomBasic(ctx context.Context, roomID int64) (*roomLiteResponse, error) {
+	// giả sử rooms có columns: id, type, name
+	var typ, name string
+	err := r.DB.QueryRowContext(ctx, `SELECT type, name FROM rooms WHERE id=?`, roomID).Scan(&typ, &name)
+	if err != nil {
+		return nil, err
+	}
+
+	display := name
+	if strings.TrimSpace(display) == "" {
+		display = "Room"
+	}
+	return &roomLiteResponse{
+		ID:          roomID,
+		Type:        typ,
+		Name:        name,
+		DisplayName: display,
+	}, nil
 }

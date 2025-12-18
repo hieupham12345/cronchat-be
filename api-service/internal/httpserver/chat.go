@@ -31,6 +31,10 @@ func (s *Server) mountChatRoutes(mux *http.ServeMux) {
 	mux.Handle("/rooms/last-seen/", http.HandlerFunc(s.handleGetRoomLastSeen))             // GET /rooms/last-seen/{roomID}
 	mux.Handle("/messages/seen/summary/", http.HandlerFunc(s.handleGetMessageSeenSummary)) // GET /messages/seen/summary/{messageID}
 	mux.Handle("/messages/seen/users/", http.HandlerFunc(s.handleListSeenUsersByMessage))  // GET /messages/seen/users/{messageID}?limit=50
+	// unread
+	// ✅ notifications / unread
+	mux.Handle("/rooms/unread-counts", http.HandlerFunc(s.handleGetUnreadCountsByRooms)) // GET
+	mux.Handle("/rooms/unread/", http.HandlerFunc(s.handleGetUnreadCountForRoom))        // GET /rooms/unread/{roomID}
 }
 
 // =======================================
@@ -277,23 +281,68 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ✅ optional: kèm room_name / displayName qua WS
+	roomLite, err := s.roomRepo.GetRoomBasic(ctx, roomID)
+	if err != nil {
+		log.Println("GetRoomBasic error:", err)
+		roomLite = nil
+	}
+
 	// (A) message_created: append in room
 	go wsSendToUsers(memberIDs, wsEnvelope{
 		Type:   "message_created",
 		RoomID: roomID,
-		Data:   resp,
-	})
-
-	// (B) room_updated: sidebar last_message + bump
-	go wsSendToUsers(memberIDs, wsEnvelope{
-		Type:   "room_updated",
-		RoomID: roomID,
 		Data: map[string]any{
-			"last_message":    resp,
-			"last_message_at": resp.CreatedAt,
-			"bump":            true,
+			"message": resp,
+			"room":    roomLite, // ✅ kèm room_name
 		},
 	})
+
+	// ✅ (C) unread notify: chỉ bắn cho người nhận (exclude sender)
+	// DB truth: mỗi user tự tính unread_count theo last_seen_at
+	recipients, err := s.chatRepo.ListRoomMemberUserIDsExcept(ctx, roomID, userID)
+	if err != nil {
+		log.Println("ListRoomMemberUserIDsExcept error:", err)
+		return
+	}
+
+	go func(roomID int64, recips []int64) {
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel2()
+
+		for _, uid := range recips {
+			cnt, err := s.chatRepo.GetUnreadCount(ctx2, roomID, uid)
+			if err != nil {
+				log.Println("GetUnreadCount error:", err)
+				continue
+			}
+
+			wsSendToUser(uid, wsEnvelope{
+				Type:   "room_unread_update",
+				RoomID: roomID,
+				Data: map[string]any{
+					"room_id":      roomID,
+					"user_id":      uid,
+					"unread_count": cnt,
+					"last_message": resp, // optional: FE khỏi fetch lại
+					"bump":         true, // optional: move room to top
+				},
+			})
+		}
+	}(roomID, recipients)
+
+	// // (B) room_updated: sidebar last_message + bump
+	// go wsSendToUsers(memberIDs, wsEnvelope{
+	// 	Type:   "room_updated",
+	// 	RoomID: roomID,
+	// 	Data: map[string]any{
+	// 		"last_message":    resp,
+	// 		"last_message_at": resp.CreatedAt,
+	// 		"bump":            true,
+	// 		"room":            roomLite, // ✅ kèm room_name
+	// 	},
+	// })
+
 }
 
 // =======================================
@@ -581,25 +630,25 @@ func (s *Server) handleMarkRoomSeenUpTo(w http.ResponseWriter, r *http.Request) 
 		},
 	})
 
-	// (B) room_updated: nếu sidebar mày gom về room_updated thì nhét seen_update vào đây
-	go wsSendToUsers(memberIDs, wsEnvelope{
-		Type:   "room_updated",
-		RoomID: req.RoomID,
-		Data: map[string]any{
-			"seen_update": map[string]any{
-				"user_id":              userID,
-				"last_seen_message_id": lastMsgID,
-				"last_seen_at":         lastSeenAtStr,
-			},
-			// ✅ kèm room (name đã decorate theo direct/group)
-			"room": map[string]any{
-				"id":         room.ID,
-				"type":       room.Type,
-				"name":       displayName,
-				"updated_at": room.UpdatedAt,
-			},
-		},
-	})
+	// // (B) room_updated: nếu sidebar mày gom về room_updated thì nhét seen_update vào đây
+	// go wsSendToUsers(memberIDs, wsEnvelope{
+	// 	Type:   "room_updated",
+	// 	RoomID: req.RoomID,
+	// 	Data: map[string]any{
+	// 		"seen_update": map[string]any{
+	// 			"user_id":              userID,
+	// 			"last_seen_message_id": lastMsgID,
+	// 			"last_seen_at":         lastSeenAtStr,
+	// 		},
+	// 		// ✅ kèm room (name đã decorate theo direct/group)
+	// 		"room": map[string]any{
+	// 			"id":         room.ID,
+	// 			"type":       room.Type,
+	// 			"name":       displayName,
+	// 			"updated_at": room.UpdatedAt,
+	// 		},
+	// 	},
+	// })
 }
 
 // =======================================
@@ -792,4 +841,87 @@ func getMessageIDFromReactionsPath(path string) (int64, error) {
 		return 0, errors.New("missing id")
 	}
 	return strconv.ParseInt(raw, 10, 64)
+}
+
+type unreadCountForRoomResponse struct {
+	RoomID      int64 `json:"room_id"`
+	UserID      int64 `json:"user_id"`
+	UnreadCount int64 `json:"unread_count"`
+}
+
+type unreadCountsByRoomsResponse struct {
+	UserID int64           `json:"user_id"`
+	Counts map[int64]int64 `json:"counts"` // room_id -> unread_count
+}
+
+func (s *Server) handleGetUnreadCountsByRooms(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	userID, err := GetUserIDFromRequest(r, s.jwtSecret)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	counts, err := s.chatRepo.GetUnreadCountsByRooms(ctx, userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, unreadCountsByRoomsResponse{
+		UserID: userID,
+		Counts: counts,
+	})
+}
+
+func (s *Server) handleGetUnreadCountForRoom(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	userID, err := GetUserIDFromRequest(r, s.jwtSecret)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
+	roomID, err := getIDFromURL(r) // expects /rooms/unread/{roomID}
+	if err != nil || roomID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid room id"})
+		return
+	}
+
+	// membership
+	isMember, err := s.roomRepo.IsUserInRoom(roomID, userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !isMember {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not a room member"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	cnt, err := s.chatRepo.GetUnreadCount(ctx, roomID, userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, unreadCountForRoomResponse{
+		RoomID:      roomID,
+		UserID:      userID,
+		UnreadCount: cnt,
+	})
 }

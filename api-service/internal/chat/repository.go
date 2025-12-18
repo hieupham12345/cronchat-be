@@ -243,38 +243,42 @@ func (r *Repository) CreateMessage(ctx context.Context, msg *Message, validateRe
 		}
 	}
 
-	// ✅ Use TX so CALL + LAST_INSERT_ID() is consistent
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// ✅ CALL proc instead of direct INSERT
-	// p_created_at: pass NULL to let proc fallback (or pass time.Now().UTC() if you want)
+	// ✅ CALL proc (now supports reply fields)
 	_, err = tx.ExecContext(ctx, `
-		CALL sp_send_message_with_day_sep(?, ?, ?, ?, ?, ?)
+		CALL sp_send_message_with_day_sep(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		msg.RoomID,
 		msg.SenderID,
 
 		msg.Content,
-		msg.MessageType, // 'text'|'image'|'file'|'system'
+		msg.MessageType,
 		msg.IsTemp,
 
-		nil, // created_at -> NULL => proc uses NOW()/UTC_TIMESTAMP() depending on your proc
+		// ✅ reply fields
+		msg.ReplyToMessageID,          // pointer => nil ok
+		nullIfEmpty(msg.ReplyPreview), // nil if empty => DB NULL
+		nullIfEmpty(msg.ReplySenderName),
+		nullIfEmpty(msg.ReplyMessageType),
+
+		// ✅ created_at (match response)
+		msg.CreatedAt, // if zero-time -> you can pass nil, but better ensure handler sets it
 	)
 	if err != nil {
 		return 0, err
 	}
 
-	// ✅ The last INSERT inside the proc is the "real message"
+	// ✅ Last insert inside the proc is the "real message"
 	var id int64
 	if err := tx.QueryRowContext(ctx, `SELECT LAST_INSERT_ID()`).Scan(&id); err != nil {
 		return 0, err
 	}
 
-	// ✅ commit
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
@@ -971,4 +975,122 @@ func (r *Repository) GetMessageRoomAndSender(ctx context.Context, messageID int6
 		return 0, 0, ErrMessageNotFound
 	}
 	return
+}
+
+// ===============================
+// 1) Recipients for notification
+// ===============================
+
+// List member user_ids in a room, excluding sender (for WS notify, badge unread...)
+func (r *Repository) ListRoomMemberUserIDsExcept(ctx context.Context, roomID, excludeUserID int64) ([]int64, error) {
+	rows, err := r.DB.QueryContext(ctx, `
+		SELECT user_id
+		FROM room_members
+		WHERE room_id = ? AND user_id <> ?
+	`, roomID, excludeUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err != nil {
+			return nil, err
+		}
+		ids = append(ids, uid)
+	}
+	return ids, rows.Err()
+}
+
+// ===============================
+// 2) Unread count (DB truth)
+// ===============================
+
+// Unread of 1 room for 1 user
+// rule: messages.created_at > rm.last_seen_at AND sender_id != user AND message_type != 'system'
+func (r *Repository) GetUnreadCount(ctx context.Context, roomID, userID int64) (int64, error) {
+	var lastSeen sql.NullTime
+	err := r.DB.QueryRowContext(ctx, `
+		SELECT last_seen_at
+		FROM room_members
+		WHERE room_id = ? AND user_id = ?
+	`, roomID, userID).Scan(&lastSeen)
+	if err != nil {
+		return 0, err
+	}
+
+	// If never seen -> treat as "very old" => count all non-system messages not from me
+	seenAt := time.Unix(0, 0)
+	if lastSeen.Valid {
+		seenAt = lastSeen.Time
+	}
+
+	var cnt int64
+	err = r.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM messages
+		WHERE room_id = ?
+		  AND message_type <> 'system'
+		  AND sender_id <> ?
+		  AND created_at > ?
+	`, roomID, userID, seenAt).Scan(&cnt)
+	return cnt, err
+}
+
+// Unread counts for sidebar: return map room_id -> unread_count
+func (r *Repository) GetUnreadCountsByRooms(ctx context.Context, userID int64) (map[int64]int64, error) {
+	rows, err := r.DB.QueryContext(ctx, `
+		SELECT
+			rm.room_id,
+			COUNT(m.id) AS unread_count
+		FROM room_members rm
+		LEFT JOIN messages m
+		  ON m.room_id = rm.room_id
+		 AND m.message_type <> 'system'
+		 AND m.sender_id <> rm.user_id
+		 AND m.created_at > COALESCE(rm.last_seen_at, '1970-01-01 00:00:00')
+		WHERE rm.user_id = ?
+		GROUP BY rm.room_id
+		HAVING COUNT(m.id) > 0
+
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int64]int64)
+	for rows.Next() {
+		var roomID, cnt int64
+		if err := rows.Scan(&roomID, &cnt); err != nil {
+			return nil, err
+		}
+		out[roomID] = cnt
+	}
+	return out, rows.Err()
+}
+
+// ===============================
+// 3) Mark seen up to message
+// ===============================
+
+// If client doesn't send messageID, fallback to now()
+func (r *Repository) MarkRoomSeenNow(ctx context.Context, roomID, userID int64) (time.Time, error) {
+	now := time.Now()
+
+	_, err := r.DB.ExecContext(ctx, `
+		UPDATE room_members
+		SET last_seen_at = CASE
+			WHEN last_seen_at IS NULL THEN ?
+			WHEN last_seen_at < ? THEN ?
+			ELSE last_seen_at
+		END
+		WHERE room_id = ? AND user_id = ?
+	`, now, now, now, roomID, userID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return now, nil
 }
