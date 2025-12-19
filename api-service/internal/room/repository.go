@@ -541,12 +541,12 @@ func (r *Repository) CreateGroupRoom(name string, createdBy int64, memberIDs []i
 	return room, nil
 }
 
-func (r *Repository) MarkRoomAsRead(roomID, userID int64, t time.Time) error {
+func (r *Repository) MarkRoomAsRead(roomID, userID int64) error {
 	_, err := r.DB.Exec(`
-        UPDATE room_members
-        SET last_seen_at = ?
-        WHERE room_id = ? AND user_id = ?
-    `, t, roomID, userID)
+		UPDATE room_members
+		SET last_seen_at = NOW()
+		WHERE room_id = ? AND user_id = ?
+		`, roomID, userID)
 	return err
 }
 

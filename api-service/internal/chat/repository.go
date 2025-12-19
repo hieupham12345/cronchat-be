@@ -1071,26 +1071,3 @@ func (r *Repository) GetUnreadCountsByRooms(ctx context.Context, userID int64) (
 	}
 	return out, rows.Err()
 }
-
-// ===============================
-// 3) Mark seen up to message
-// ===============================
-
-// If client doesn't send messageID, fallback to now()
-func (r *Repository) MarkRoomSeenNow(ctx context.Context, roomID, userID int64) (time.Time, error) {
-	now := time.Now()
-
-	_, err := r.DB.ExecContext(ctx, `
-		UPDATE room_members
-		SET last_seen_at = CASE
-			WHEN last_seen_at IS NULL THEN ?
-			WHEN last_seen_at < ? THEN ?
-			ELSE last_seen_at
-		END
-		WHERE room_id = ? AND user_id = ?
-	`, now, now, now, roomID, userID)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return now, nil
-}

@@ -212,6 +212,12 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:        now,
 	}
 
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	} else {
+		msg.CreatedAt = msg.CreatedAt.UTC()
+	}
+
 	// 8) insert DB (validate reply + fill cache fields in msg)
 	ctx := r.Context()
 	id, err := s.chatRepo.CreateMessage(ctx, msg, true)

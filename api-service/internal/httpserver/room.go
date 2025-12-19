@@ -796,9 +796,7 @@ func (s *Server) handleMarkRoomAsRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC()
-
-	if err := s.roomRepo.MarkRoomAsRead(roomID, userID, now); err != nil {
+	if err := s.roomRepo.MarkRoomAsRead(roomID, userID); err != nil {
 		log.Println("MarkRoomAsRead error:", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
