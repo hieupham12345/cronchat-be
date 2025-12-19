@@ -199,9 +199,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid message_type"})
 		return
 	}
+	now := time.Now().UTC()
 
 	// 7) build model
-	now := time.Now()
 	msg := &chat.Message{
 		RoomID:           roomID,
 		SenderID:         userID,
@@ -209,14 +209,11 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		MessageType:      msgType,
 		IsTemp:           0,
 		ReplyToMessageID: req.ReplyToMessageID,
-		CreatedAt:        now,
+		CreatedAt:   now, // ✅ QUAN TRỌNG
+
 	}
 
-	if msg.CreatedAt.IsZero() {
-		msg.CreatedAt = time.Now().UTC()
-	} else {
-		msg.CreatedAt = msg.CreatedAt.UTC()
-	}
+
 
 	// 8) insert DB (validate reply + fill cache fields in msg)
 	ctx := r.Context()

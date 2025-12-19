@@ -251,24 +251,19 @@ func (r *Repository) CreateMessage(ctx context.Context, msg *Message, validateRe
 
 	// ✅ CALL proc (now supports reply fields)
 	_, err = tx.ExecContext(ctx, `
-		CALL sp_send_message_with_day_sep(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	CALL sp_send_message_with_day_sep(?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		msg.RoomID,
-		msg.SenderID,
-
-		msg.Content,
-		msg.MessageType,
-		msg.IsTemp,
-
-		// ✅ reply fields
-		msg.ReplyToMessageID,          // pointer => nil ok
-		nullIfEmpty(msg.ReplyPreview), // nil if empty => DB NULL
-		nullIfEmpty(msg.ReplySenderName),
-		nullIfEmpty(msg.ReplyMessageType),
-
-		// ✅ created_at (match response)
-		msg.CreatedAt, // if zero-time -> you can pass nil, but better ensure handler sets it
+	msg.RoomID,
+	msg.SenderID,
+	msg.Content,
+	msg.MessageType,
+	msg.IsTemp,
+	msg.ReplyToMessageID,
+	nullIfEmpty(msg.ReplyPreview),
+	nullIfEmpty(msg.ReplySenderName),
+	nullIfEmpty(msg.ReplyMessageType),
 	)
+
 	if err != nil {
 		return 0, err
 	}

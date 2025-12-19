@@ -668,12 +668,11 @@ func (r *Repository) CreateImageMessage(
 	imageURL string,
 ) (*Message, error) {
 
-	now := time.Now()
 
 	res, err := r.DB.Exec(`
-		INSERT INTO messages (room_id, sender_id, content, message_type, created_at)
-		VALUES (?, ?, ?, 'image', ?)
-	`, roomID, senderID, imageURL, now)
+		INSERT INTO messages (room_id, sender_id, content, message_type)
+		VALUES (?, ?, ?, 'image')
+	`, roomID, senderID, imageURL)
 	if err != nil {
 		return nil, err
 	}
@@ -703,7 +702,6 @@ func (r *Repository) CreateImageMessage(
 		Content:         imageURL,
 		Type:            "image",
 		IsTemp:          0,
-		CreatedAt:       now,
 		SenderAvatarURL: avatarURL,
 	}, nil
 }
