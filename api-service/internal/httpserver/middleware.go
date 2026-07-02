@@ -3,7 +3,6 @@ package httpserver
 import (
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -24,38 +23,27 @@ func LoggerMiddleware(next http.Handler) http.Handler {
 func (s *Server) RequireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-		// Lấy header Authorization
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing Authorization header"})
+		tokenStr, err := bearerToken(r)
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
 
-		// Expect: "Bearer <token>"
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token format"})
-			return
-		}
-
-		tokenStr := parts[1]
-
-		// Parse token
 		claims, err := ParseToken(tokenStr, s.jwtSecret)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+			respondError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 
 		// Chỉ chấp nhận access token
 		if claims.TokenType != TokenTypeAccess {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "access token required"})
+			respondError(w, http.StatusUnauthorized, "access token required")
 			return
 		}
 
 		// Check role
 		if claims.Role != "admin" {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin required"})
+			respondError(w, http.StatusForbidden, "admin required")
 			return
 		}
 

@@ -1,0 +1,41 @@
+# Production compose — run from the REPO ROOT on the EC2 host:
+#   docker compose -f deploy/docker-compose.prod.yml up -d --build
+#
+# Uploads live on the host EBS volume (./data/*) so they survive container
+# restarts and redeploys. MySQL is external (RDS) — configured via deploy/.env.prod.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: cronchat-api:latest
+    env_file:
+      - deploy/.env.prod
+    # Bind to localhost only when running behind Caddy (TLS). To expose the app
+    # directly over plain HTTP for testing, change to "5555:5555".
+    ports:
+      - "127.0.0.1:5555:5555"
+    volumes:
+      - ./data/user_avatars:/app/data/user_avatars
+      - ./data/chat_uploads:/app/data/chat_uploads
+    restart: unless-stopped
+
+  # ----- OPTIONAL: TLS reverse proxy (needs a domain pointing at the Elastic IP) -----
+  # Uncomment this block AND set ports on `api` to "127.0.0.1:5555:5555".
+  # Caddy auto-provisions Let's Encrypt certs and proxies WebSocket transparently.
+  #
+  # caddy:
+  #   image: caddy:2-alpine
+  #   depends_on: [api]
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   restart: unless-stopped
+
+# volumes:
+#   caddy_data:
+#   caddy_config:

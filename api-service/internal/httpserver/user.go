@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -85,22 +84,6 @@ func (s *Server) mountUserRoutes(mux *http.ServeMux) {
 
 }
 
-func getIDFromURL(r *http.Request) (int64, error) {
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-
-	// parts = ["admin", "users", "{id}"]
-	if len(parts) < 3 {
-		return 0, errors.New("invalid URL")
-	}
-
-	id, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil {
-		return 0, errors.New("invalid id")
-	}
-
-	return id, nil
-}
-
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 var phoneRegex = regexp.MustCompile(`^0[0-9]{9}$`)
 
@@ -110,54 +93,6 @@ func isValidEmail(email string) bool {
 
 func isValidPhone(phone string) bool {
 	return phoneRegex.MatchString(phone)
-}
-
-// getIP: lấy IP client (ưu tiên header reverse proxy nếu có)
-func getIP(r *http.Request) string {
-	// X-Real-IP do nginx/nginx-proxy set
-	ip := r.Header.Get("X-Real-IP")
-	if ip != "" {
-		return ip
-	}
-
-	// X-Forwarded-For: lấy IP đầu tiên
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
-	}
-
-	// fallback: RemoteAddr
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
-}
-
-// Trả về userID (int64) hoặc lỗi
-func GetUserIDFromRequest(r *http.Request, secret []byte) (int64, error) {
-	// Lấy Authorization header
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return 0, errors.New("missing Authorization header")
-	}
-
-	// Expect: "Bearer <token>"
-	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return 0, errors.New("invalid Authorization header format")
-	}
-
-	tokenStr := parts[1]
-
-	// Parse token
-	claims, err := ParseToken(tokenStr, secret)
-	if err != nil {
-		return 0, errors.New("invalid or expired token")
-	}
-
-	return int64(claims.UserID), nil
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {

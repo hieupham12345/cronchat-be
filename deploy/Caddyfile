@@ -1,0 +1,7 @@
+# OPTIONAL TLS reverse proxy. Requires a domain whose A record points at the
+# EC2 Elastic IP. Replace chat.example.com with your domain.
+#
+# Caddy proxies WebSocket upgrades automatically — no extra config needed for /ws.
+chat.example.com {
+	reverse_proxy api:5555
+}

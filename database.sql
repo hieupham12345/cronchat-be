@@ -5,6 +5,11 @@ SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- Drop order: child -> parent (avoid FK errors)
+DROP PROCEDURE IF EXISTS `sp_send_message_with_day_sep`;
+DROP TRIGGER IF EXISTS `trg_messages_after_insert`;
+DROP TABLE IF EXISTS `attachments`;
+DROP TABLE IF EXISTS `message_receipts`;
+DROP TABLE IF EXISTS `message_reactions`;
 DROP TABLE IF EXISTS `messages`;
 DROP TABLE IF EXISTS `room_members`;
 DROP TABLE IF EXISTS `rooms`;
@@ -37,6 +42,13 @@ CREATE TABLE `users` (
   UNIQUE KEY `uq_users_username` (`username`),
   KEY `idx_users_full_name` (`full_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- System sentinel user (id=99999). REQUIRED: the day-separator rows inserted by
+-- sp_send_message_with_day_sep use sender_id=99999, which must satisfy the
+-- messages.sender_id -> users.id foreign key.
+INSERT INTO `users` (`id`, `username`, `password`, `role`, `is_active`)
+VALUES (99999, 'system', '-', 'user', 1)
+ON DUPLICATE KEY UPDATE `username` = `username`;
 
 -- =========================================
 -- ROOMS
@@ -72,6 +84,7 @@ CREATE TABLE `room_members` (
 
   `joined_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `last_seen_at` datetime DEFAULT NULL,
+  `last_seen_message_id` int unsigned DEFAULT NULL,
 
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_room_members_room_user` (`room_id`,`user_id`),
@@ -173,25 +186,52 @@ CREATE TABLE `message_receipts` (
     FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- =========================================
+-- ATTACHMENTS
+-- (dùng bởi chat.Repository.CreateAttachment / CreateMessageWithAttachments)
+-- =========================================
+CREATE TABLE `attachments` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `message_id` INT UNSIGNED NOT NULL,
+  `file_name` VARCHAR(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `file_size` BIGINT NOT NULL DEFAULT 0,
+  `content_type` VARCHAR(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `file_path` TEXT COLLATE utf8mb4_unicode_ci NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+  PRIMARY KEY (`id`),
+  KEY `idx_attachments_message_id` (`message_id`),
+  CONSTRAINT `fk_attachments_message`
+    FOREIGN KEY (`message_id`) REFERENCES `messages` (`id`)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_send_message_with_day_sep`(
+-- =========================================
+-- STORED PROCEDURE: sp_send_message_with_day_sep
+-- ⚠️ Reconstructed from the 9-arg CALL in chat.Repository.CreateMessage.
+--    Diff against the live DB before applying in production.
+-- Args: room_id, sender_id, content, message_type, is_temp,
+--       reply_to_message_id, reply_preview, reply_sender_name, reply_message_type
+-- =========================================
+DELIMITER $$
+CREATE PROCEDURE `sp_send_message_with_day_sep`(
   IN p_room_id INT UNSIGNED,
   IN p_sender_id INT UNSIGNED,
   IN p_content TEXT,
   IN p_message_type ENUM('text','image','file','system'),
   IN p_is_temp TINYINT(1),
-  IN p_created_at DATETIME
+  IN p_reply_to_message_id INT UNSIGNED,
+  IN p_reply_preview VARCHAR(300),
+  IN p_reply_sender_name VARCHAR(255),
+  IN p_reply_message_type ENUM('text','image','file','system')
 )
-DELIMITER $$
 BEGIN
   DECLARE v_sys_id INT UNSIGNED DEFAULT 99999;
   DECLARE v_day DATE;
   DECLARE v_label VARCHAR(64);
   DECLARE v_created DATETIME;
 
-  -- created_at fallback
-  SET v_created = IFNULL(p_created_at, NOW());
+  SET v_created = NOW();
   SET v_day = DATE(v_created);
   SET v_label = CONCAT('--- ', DATE_FORMAT(v_day, '%Y-%m-%d'), ' ---');
 
@@ -199,31 +239,42 @@ BEGIN
   IF p_message_type <> 'system' THEN
 
     -- If no day separator exists for that room+day -> insert it
-	 IF NOT EXISTS (
-		  SELECT 1
-		  FROM messages m
-		  WHERE m.room_id = p_room_id
-			AND m.sender_id = v_sys_id
-			AND m.message_type COLLATE utf8mb4_unicode_ci = 'system' COLLATE utf8mb4_unicode_ci
-			AND m.content       COLLATE utf8mb4_unicode_ci = v_label  COLLATE utf8mb4_unicode_ci
-			AND DATE(m.created_at) = v_day
-		  LIMIT 1
-		) THEN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM messages m
+        WHERE m.room_id = p_room_id
+          AND m.sender_id = v_sys_id
+          AND m.message_type COLLATE utf8mb4_unicode_ci = 'system' COLLATE utf8mb4_unicode_ci
+          AND m.content      COLLATE utf8mb4_unicode_ci = v_label  COLLATE utf8mb4_unicode_ci
+          AND DATE(m.created_at) = v_day
+        LIMIT 1
+    ) THEN
       INSERT INTO messages (room_id, sender_id, content, message_type, is_temp, created_at)
       VALUES (p_room_id, v_sys_id, v_label, 'system', 0, TIMESTAMP(v_day));
     END IF;
 
   END IF;
 
-  -- 2) Insert the real message
-  INSERT INTO messages (room_id, sender_id, content, message_type, is_temp, created_at)
-  VALUES (p_room_id, p_sender_id, p_content, p_message_type, IFNULL(p_is_temp, 0), v_created);
+  -- 2) Insert the real message (with reply cache fields)
+  INSERT INTO messages (
+    room_id, sender_id,
+    reply_to_message_id, reply_preview, reply_sender_name, reply_message_type,
+    content, message_type, is_temp, created_at
+  )
+  VALUES (
+    p_room_id, p_sender_id,
+    p_reply_to_message_id, p_reply_preview, p_reply_sender_name, p_reply_message_type,
+    p_content, p_message_type, IFNULL(p_is_temp, 0), v_created
+  );
 
-END
+END $$
 DELIMITER ;
 
-CREATE DEFINER=`root`@`localhost` TRIGGER `trg_messages_after_insert` AFTER INSERT ON `messages` FOR EACH ROW BEGIN
+DELIMITER $$
+CREATE TRIGGER `trg_messages_after_insert` AFTER INSERT ON `messages` FOR EACH ROW
+BEGIN
     UPDATE rooms
     SET updated_at = NEW.created_at
     WHERE id = NEW.room_id;
-END
+END $$
+DELIMITER ;

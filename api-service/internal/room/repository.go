@@ -668,7 +668,6 @@ func (r *Repository) CreateImageMessage(
 	imageURL string,
 ) (*Message, error) {
 
-
 	res, err := r.DB.Exec(`
 		INSERT INTO messages (room_id, sender_id, content, message_type)
 		VALUES (?, ?, ?, 'image')

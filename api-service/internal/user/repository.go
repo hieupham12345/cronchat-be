@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
 	"strings"
 )
 
@@ -228,8 +227,6 @@ func (r *Repository) UpdateUserDynamic(id int64, fields map[string]interface{}) 
 
 	query += " WHERE id = ?"
 	args = append(args, id)
-
-	log.Printf(query) // 👈 DÒNG NÀY
 
 	_, err := r.DB.Exec(query, args...)
 	return err

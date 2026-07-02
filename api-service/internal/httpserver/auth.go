@@ -12,13 +12,6 @@ import (
 	"time"
 )
 
-func nsToString(ns sql.NullString) string {
-	if ns.Valid {
-		return ns.String
-	}
-	return ""
-}
-
 func (s *Server) mountAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout) // 👈 thêm nè
@@ -249,12 +242,6 @@ func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, refreshResponse{
 		AccessToken: accessToken,
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
